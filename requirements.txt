@@ -1,0 +1,7 @@
+aioslsk==1.6.3
+aiosqlite==0.20.0
+aiohttp
+mutagen
+typer
+yandex-music==2.2.0
+python-dotenv
