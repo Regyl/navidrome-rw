@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-import aiohttp
+import requests
 
 from core.yandex_client import TrackMetadata
 
@@ -15,10 +15,17 @@ class DownloadError(Exception):
 
 
 _ILLEGAL_FS_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1F]')
+# Windows disallows names ending with space or dot; strip any run of these from both ends
+_LEADING_TRAILING_WHITESPACE_OR_DOT = re.compile(r"^[\s.]+|[\s.]+$")
 
 
 def _sanitize_component(value: str) -> str:
-    cleaned = _ILLEGAL_FS_CHARS.sub("", value).strip()
+    """Sanitize a path component for use in file paths. Removes Windows-invalid
+    characters and leading/trailing dots and whitespace (Windows does not allow
+    names ending with . or space).
+    """
+    cleaned = _ILLEGAL_FS_CHARS.sub("", value)
+    cleaned = _LEADING_TRAILING_WHITESPACE_OR_DOT.sub("", cleaned)
     return cleaned or "Unknown"
 
 
@@ -66,21 +73,18 @@ def configure_logging(log_path: Path) -> None:
     root.addHandler(console_handler)
 
 
-async def download_cover_image(track: TrackMetadata) -> Optional[bytes]:
+def download_cover_image(track: TrackMetadata) -> Optional[bytes]:
     if not track.cover_uri:
         return None
 
-    # yandex-music cover_uri contains %% placeholder for size.
     cover_url = track.cover_uri.replace("%%", "600x600")
     if not cover_url.startswith("http"):
         cover_url = f"https://{cover_url}"
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(cover_url, timeout=15) as resp:
-                if resp.status != 200:
-                    return None
-                return await resp.read()
+        resp = requests.get(cover_url, timeout=15)
+        if resp.status_code != 200:
+            return None
+        return resp.content
     except Exception:
         return None
-

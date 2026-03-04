@@ -1,24 +1,24 @@
-## Yandex Music → Navidrome migration
+# Yandex Music to Navidrome migration
 
 Utility to migrate your Yandex Music liked tracks into a Navidrome-compatible library using:
 
 - Yandex Music API (`yandex-music`) for scraping liked tracks
-- Soulseek (`aioslsk`) for downloading full audio files
+- yt-dlp (YouTube and other sites) for downloading audio — tried first
+- Soulseek (`aioslsk`) for downloading — fallback when yt-dlp finds nothing
 - LRCLIB (same backend used by `lrcget`) for synced `.lrc` lyrics
 
 Navidrome expects the library layout:
 
-- `Artist Name/Album Name/song.ext`
+- `Artist Name/Album Name/song.mp3`
 - `Artist Name/Album Name/song.lrc`
 - `Artist Name/Album Name/album-cover.jpg`
 
-This tool creates that layout under a single root directory.
-
 ### Requirements
 
-- Python 3.10+
+- Python
 - A valid Yandex Music access token
-- A Soulseek account (username and password)
+- FFmpeg (for yt-dlp audio conversion)
+- A Soulseek account (username and password) — used as fallback when yt-dlp finds nothing
 
 Install dependencies:
 
@@ -39,6 +39,8 @@ YANDEX_MUSIC_TOKEN=your_yandex_token_here
 SLSK_USERNAME=your_soulseek_username
 SLSK_PASSWORD=your_soulseek_password
 SLSK_DOWNLOAD_DIR=D:\Temp\SoulseekDownloads
+YTDLP_DOWNLOAD_DIR=D:\Temp\YtdlpDownloads
+YM_NAVIDROME_DATA=D:\Temp\YmNavidromeCache
 ```
 
 These values will be loaded automatically when you run the CLI.
@@ -50,26 +52,33 @@ Set the following environment variables:
 - `YANDEX_MUSIC_TOKEN` – Yandex Music API token.
 - `SLSK_USERNAME` – Soulseek username.
 - `SLSK_PASSWORD` – Soulseek password.
-- `SLSK_DOWNLOAD_DIR` – optional, directory where temporary Soulseek downloads are stored (defaults to `./slsk_downloads`).
+- `SLSK_DOWNLOAD_DIR` – directory where temporary Soulseek downloads are stored.
+- `YTDLP_DOWNLOAD_DIR` – directory where temporary yt-dlp downloads are stored.
+- `YM_NAVIDROME_DATA` – directory where `migration.db`, `migration.log`, and `migration_liked_tracks.json` are stored.
+- `NAVIDROME_FOLDER` – Target folder which navidrome reads
 
 ### Usage
 
 Run a full sync into an existing Navidrome music root:
 
 ```bash
-python -m main sync --music-root "D:\Music\Navidrome"
-```
-
-Dry-run (no downloads, just logging what would happen):
-
-```bash
-python -m main dry-run --music-root "D:\Music\Navidrome"
+python -m main sync
 ```
 
 Retry previously failed tracks:
 
 ```bash
-python -m main retry-failed --music-root "D:\Music\Navidrome"
+python -m main retry-failed
 ```
 
-`migration.db` and `migration.log` are stored in the music root for tracking and diagnostics.
+List previously failed tracks:
+
+```bash
+python -m main list-failed
+```
+
+Count successfully downloaded tracks:
+
+```bash
+python -m main count-successful
+```

@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import typer
 from dotenv import load_dotenv
 
 from core.database import MigrationDB
 from core.lyrics import generate_lrc_for_track
-from core.slsk_client import SlskClient
+from core.slsk_client import download_track_with_retries as download_track_soulseek
 from core.tagging import embed_tags
+from core.yandex_client import TrackMetadata, fetch_failed_track_metadata, fetch_liked_tracks
+from core.ytdlp_client import download_track as download_track_ytdlp
 from util.utils import (
     DownloadError,
     build_album_directory,
@@ -22,35 +22,39 @@ from util.utils import (
     download_cover_image,
     ensure_directory,
 )
-from core.yandex_client import TrackMetadata, fetch_failed_track_metadata, fetch_liked_tracks
 
-
-app = typer.Typer(help="Migrate Yandex Music likes into a Navidrome library.")
-
+app = typer.Typer(help="Migrate Yandex Music liked tracks into a Navidrome library.")
+_logger = logging.getLogger("yandexmusic_to_navidrome")
 
 @dataclass
 class AppConfig:
     music_root: Path
-    limit: Optional[int]
-    concurrency: int
     download_timeout_seconds: int = 600
     max_download_retries: int = 3
 
 
-def get_logger() -> logging.Logger:
-    return logging.getLogger("yandex_to_navidrome")
+def _get_data_dir() -> Path:
+    """Return directory for migration state (db/log/cache), creating it if needed.
 
-async def process_single_track(
+    If YM_NAVIDROME_DATA is set, that directory is used. Otherwise the
+    Navidrome music root is used as before.
+    """
+    env_dir = os.getenv("YM_NAVIDROME_DATA")
+    if not env_dir:
+        raise RuntimeError(f"YM_NAVIDROME_DATA environment variable not set")
+    cache_dir = Path(env_dir)
+
+    ensure_directory(cache_dir)
+    return cache_dir
+
+
+def process_single_track(
     track: TrackMetadata,
     cfg: AppConfig,
     db: MigrationDB,
-    slsk_client: SlskClient,
-    dry_run: bool,
 ) -> None:
-    logger = get_logger()
-
-    if await db.is_successful(track.track_id):
-        logger.info(
+    if db.is_successful(track.track_id):
+        _logger.info(
             "track_already_migrated",
             extra={"track_id": track.track_id, "title": track.title},
         )
@@ -62,39 +66,36 @@ async def process_single_track(
     audio_dest = album_dir / build_track_filename(track, extension="mp3")
 
     if audio_dest.exists():
-        logger.info(
+        _logger.info(
             "destination_exists_skip",
             extra={"track_id": track.track_id, "path": str(audio_dest)},
         )
-        await db.mark_success(track.track_id, str(audio_dest))
-        return
-
-    if dry_run:
-        logger.info(
-            "dry_run_plan",
-            extra={
-                "track_id": track.track_id,
-                "title": track.title,
-                "dest": str(audio_dest),
-                "artists": ", ".join(track.artists),
-                "album": track.album or "",
-            },
-        )
+        db.mark_success(track.track_id, str(audio_dest))
         return
 
     try:
-        download_path, actual_extension = await slsk_client.download_track_with_retries(
-            track=track,
-            timeout_seconds=cfg.download_timeout_seconds,
-            max_retries=cfg.max_download_retries,
-        )
-    except DownloadError as exc:
-        logger.error(
-            "download_failed",
+        try:
+            download_path, actual_extension = download_track_ytdlp(
+                track=track,
+                timeout_seconds=cfg.download_timeout_seconds,
+            )
+        except DownloadError as e:
+            _logger.warning("download_error from yt-dlp: " + str(e), extra={"track_id": track.track_id})
+            if "The current session has been rate-limited by YouTube" in str(e):
+                exit(1)
+            download_path, actual_extension = download_track_soulseek(
+                track=track,
+                timeout_seconds=cfg.download_timeout_seconds,
+                max_retries=cfg.max_download_retries,
+            )
+    except (DownloadError, RuntimeError) as exc:
+        _logger.error(
+            "download_failed: " + str(exc),
             extra={"track_id": track.track_id, "error": str(exc)},
         )
-        await db.mark_failed(track.track_id, str(exc))
+        db.mark_failed(track.track_id, str(exc))
         return
+    _logger.info("download_successful", extra={"title": track.title})
 
     final_audio_dest = album_dir / build_track_filename(
         track, extension=actual_extension
@@ -103,17 +104,16 @@ async def process_single_track(
     ensure_directory(final_audio_dest.parent)
     download_path.replace(final_audio_dest)
 
-    cover_bytes = await download_cover_image(track)
+    cover_bytes = download_cover_image(track)
 
-    # Save album cover once per album.
     cover_path = album_dir / "album-cover.jpg"
     if cover_bytes and not cover_path.exists():
         cover_path.write_bytes(cover_bytes)
 
     try:
         embed_tags(final_audio_dest, track, cover_bytes)
-    except Exception as exc:  # noqa: BLE001
-        logger.error(
+    except Exception as exc:
+        _logger.error(
             "tagging_failed",
             extra={
                 "track_id": track.track_id,
@@ -123,141 +123,133 @@ async def process_single_track(
         )
 
     try:
-        await generate_lrc_for_track(final_audio_dest, track)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
+        generate_lrc_for_track(final_audio_dest, track)
+    except Exception as exc:
+        _logger.warning(
             "lyrics_failed",
             extra={"track_id": track.track_id, "error": str(exc)},
         )
 
-    await db.mark_success(track.track_id, str(final_audio_dest))
+    db.mark_success(track.track_id, str(final_audio_dest))
 
 
-async def run_sync_like_tracks(cfg: AppConfig, dry_run: bool) -> None:
-    logger = get_logger()
-
-    async with MigrationDB(cfg.music_root / "migration.db") as db, SlskClient() as slsk:
-        liked_tracks = await fetch_liked_tracks(limit=cfg.limit)
-        logger.info(
+def run_sync_like_tracks(cfg: AppConfig) -> None:
+    data_dir = _get_data_dir()
+    with MigrationDB(data_dir / "migration.db") as db:
+        liked_tracks = fetch_liked_tracks(
+            cache_path=data_dir / "migration_liked_tracks.json"
+        )
+        _logger.info(
             "fetched_yandex_liked_tracks",
-            extra={"count": len(liked_tracks), "limit": cfg.limit},
+            extra={"count": len(liked_tracks)},
         )
 
-        semaphore = asyncio.Semaphore(cfg.concurrency)
-
-        async def worker(track: TrackMetadata) -> None:
-            async with semaphore:
-                await process_single_track(track, cfg, db, slsk, dry_run=dry_run)
-
-        tasks = [worker(t) for t in liked_tracks]
-        await asyncio.gather(*tasks)
+        for track in liked_tracks:
+            process_single_track(track, cfg, db)
 
 
-async def run_retry_failed(cfg: AppConfig) -> None:
-    logger = get_logger()
-
-    async with MigrationDB(cfg.music_root / "migration.db") as db, SlskClient() as slsk:
-        failed_ids = await db.get_failed_track_ids()
+def run_retry_failed(cfg: AppConfig) -> None:
+    data_dir = _get_data_dir()
+    with MigrationDB(data_dir / "migration.db") as db:
+        failed_ids = db.get_failed_track_ids()
         if not failed_ids:
-            logger.info("no_failed_tracks_to_retry")
+            _logger.info("no_failed_tracks_to_retry")
             return
 
-        logger.info("retrying_failed_tracks", extra={"count": len(failed_ids)})
+        _logger.info("retrying_failed_tracks", extra={"count": len(failed_ids)})
 
-        semaphore = asyncio.Semaphore(cfg.concurrency)
-
-        async def worker(track_id: str) -> None:
-            track = await fetch_failed_track_metadata(track_id)
-            async with semaphore:
-                await process_single_track(track, cfg, db, slsk, dry_run=False)
-
-        tasks = [worker(tid) for tid in failed_ids]
-        await asyncio.gather(*tasks)
+        for track_id in failed_ids:
+            track = fetch_failed_track_metadata(track_id)
+            process_single_track(track, cfg, db)
 
 
-def _build_config(
-    music_root: Path, limit: Optional[int], concurrency: int, timeout_minutes: int
-) -> AppConfig:
+def _build_config(timeout_minutes: int) -> AppConfig:
     return AppConfig(
-        music_root=music_root,
-        limit=limit,
-        concurrency=concurrency,
+        music_root=Path(os.getenv("NAVIDROME_FOLDER")),
         download_timeout_seconds=timeout_minutes * 60,
     )
 
 
-def common_options(
-    music_root: Path = typer.Option(
-        ...,
-        "--music-root",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        writable=True,
-        resolve_path=True,
-        help="Root folder of the Navidrome music library.",
-    ),
-    limit: Optional[int] = typer.Option(
-        None, "--limit", help="Limit the number of tracks to process."
-    ),
-    concurrency: int = typer.Option(
-        3,
-        "--concurrency",
-        min=1,
-        help="Number of concurrent downloads.",
-    ),
-    timeout_minutes: int = typer.Option(
+@app.command("sync")
+def sync_command(
+        timeout_minutes: int = typer.Option(
         10,
         "--timeout-minutes",
         min=1,
         help="Per-track download timeout in minutes.",
     ),
-) -> AppConfig:
-    configure_logging(music_root / "migration.log")
-    return _build_config(music_root, limit, concurrency, timeout_minutes)
-
-
-@app.command("sync")
-def sync_command(  # pragma: no cover - Typer CLI wrapper
-    cfg: AppConfig = typer.Option(  # type: ignore[assignment]
-        None, callback=common_options, is_eager=True
-    ),
 ) -> None:
     """Synchronize all liked tracks from Yandex Music into Navidrome."""
-    if cfg is None:
-        raise typer.BadParameter("Configuration could not be built.")
-    asyncio.run(run_sync_like_tracks(cfg, dry_run=False))
+    data_dir = _get_data_dir()
+    configure_logging(data_dir / "migration.log")
+    cfg = _build_config(timeout_minutes)
+    run_sync_like_tracks(cfg)
 
-
-@app.command("dry-run")
-def dry_run_command(  # pragma: no cover - Typer CLI wrapper
-    cfg: AppConfig = typer.Option(  # type: ignore[assignment]
-        None, callback=common_options, is_eager=True
-    ),
-) -> None:
-    """Show what would be migrated without downloading anything."""
-    if cfg is None:
-        raise typer.BadParameter("Configuration could not be built.")
-    asyncio.run(run_sync_like_tracks(cfg, dry_run=True))
+def run_list_failed(cache_dir: Path) -> None:
+    with MigrationDB(cache_dir / "migration.db") as db:
+        failed = db.get_failed_tracks()
+        count = len(failed)
+        if count == 0:
+            _logger.info("no_failed_tracks")
+            return
+        _logger.info("failed_tracks_count", extra={"count": count})
+        for track_id, error in failed:
+            _logger.info(
+                "failed_track",
+                extra={"track_id": track_id, "error": error},
+            )
+        # Also print to stdout for easy inspection
+        typer.echo(f"Failed downloads: {count}")
+        for track_id, error in failed:
+            typer.echo(f"  {track_id}: {error}")
 
 
 @app.command("retry-failed")
-def retry_failed_command(  # pragma: no cover - Typer CLI wrapper
-    cfg: AppConfig = typer.Option(  # type: ignore[assignment]
-        None, callback=common_options, is_eager=True
+def retry_failed_command(
+        timeout_minutes: int = typer.Option(
+        10,
+        "--timeout-minutes",
+        min=1,
+        help="Per-track download timeout in minutes.",
     ),
 ) -> None:
     """Retry previously failed downloads recorded in migration.db."""
-    if cfg is None:
-        raise typer.BadParameter("Configuration could not be built.")
-    asyncio.run(run_retry_failed(cfg))
+    data_dir = _get_data_dir()
+    configure_logging(data_dir / "migration.log")
+    cfg = _build_config(timeout_minutes)
+    run_retry_failed(cfg)
 
 
-def main() -> None:  # pragma: no cover - entry point
+@app.command("list-failed")
+def list_failed_command(
+) -> None:
+    """List all failed-to-download tracks and their quantity."""
+    data_dir = _get_data_dir()
+    configure_logging(data_dir / "migration.log")
+    run_list_failed(data_dir)
+
+
+def run_count_successful(cache_dir: Path) -> None:
+    with MigrationDB(cache_dir / "migration.db") as db:
+        count = db.get_successful_count()
+        _logger.info("successful_downloads_count", extra={"count": count})
+        typer.echo(f"Successfully downloaded tracks: {count}")
+
+
+@app.command("count-successful")
+def count_successful_command(
+) -> None:
+    """Print the quantity of successfully downloaded tracks."""
+    data_dir = _get_data_dir()
+    configure_logging(data_dir / "migration.log")
+    run_count_successful(data_dir)
+
+
+def main() -> None:
     load_dotenv()
     os.environ.setdefault("PYTHONASYNCIODEBUG", "0")
     app()
 
 
-if __name__ == "__main__":  # pragma: no cover - script entry
+if __name__ == "__main__":
     main()

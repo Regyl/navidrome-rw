@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-import asyncio
+import json
+import logging
 import os
-from dataclasses import dataclass
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import List, Optional
 
 from yandex_music import Client, Track
@@ -10,6 +13,9 @@ from yandex_music import Client, Track
 
 _TOKEN_ENV_VAR = "YANDEX_MUSIC_TOKEN"
 
+_logger = logging.getLogger("yandex_client")
+
+_client_singleton: Optional[Client] = None
 
 @dataclass
 class TrackMetadata:
@@ -26,14 +32,17 @@ class TrackMetadata:
 
 
 def _get_client() -> Client:
-    token = os.getenv(_TOKEN_ENV_VAR)
-    if not token:
-        raise RuntimeError(
-            f"Environment variable '{_TOKEN_ENV_VAR}' is not set. "
-            "Set it to a valid Yandex Music access token. "
-            "See https://yandex-music.readthedocs.io/en/main/token.html for details."
-        )
-    return Client(token).init()
+    global _client_singleton
+    if _client_singleton is None:
+        token = os.getenv(_TOKEN_ENV_VAR)
+        if not token:
+            raise RuntimeError(
+                f"Environment variable '{_TOKEN_ENV_VAR}' is not set. "
+                "Set it to a valid Yandex Music access token. "
+                "See https://yandex-music.readthedocs.io/en/main/token.html for details."
+            )
+        _client_singleton = Client(token).init()
+    return _client_singleton
 
 
 def _build_metadata(track: Track) -> TrackMetadata:
@@ -56,39 +65,42 @@ def _build_metadata(track: Track) -> TrackMetadata:
     )
 
 
-async def fetch_liked_tracks(limit: Optional[int] = None) -> list[TrackMetadata]:
-    def _sync_fetch() -> list[TrackMetadata]:
-        client = _get_client()
+def fetch_liked_tracks(cache_path: Optional[Path] = None) -> list[TrackMetadata]:
+    if cache_path is not None and cache_path.exists():
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        return [TrackMetadata(**item) for item in data]
+
+    client = _get_client()
+    likes = client.users_likes_tracks()
+    result: list[TrackMetadata] = []
+    _logger.info(f"Found {len(likes)} liked tracks.")
+
+    for liked in likes:
+        full_track = liked.fetch_track()
+        _logger.info(f"Fetched track {full_track.title}")
+        time.sleep(0.5)
+        result.append(_build_metadata(full_track))
+
+    if cache_path is not None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps([asdict(t) for t in result], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    return result
+
+
+def fetch_failed_track_metadata(track_id: str) -> TrackMetadata:
+    client = _get_client()
+    try:
+        tr = client.tracks([track_id])[0]
+        return _build_metadata(tr)
+    except Exception:
         likes = client.users_likes_tracks()
-        result: list[TrackMetadata] = []
-
-        for idx, liked in enumerate(likes):
-            if limit is not None and idx >= limit:
-                break
+        for liked in likes:
             full_track = liked.fetch_track()
-            result.append(_build_metadata(full_track))
-
-        return result
-
-    return await asyncio.to_thread(_sync_fetch)
-
-
-async def fetch_failed_track_metadata(track_id: str) -> TrackMetadata:
-    def _sync_fetch_single() -> TrackMetadata:
-        client = _get_client()
-        # yandex-music expects "trackId:albumId" but track_id here is the "real_id"
-        # To keep it robust, we first try as-is, then fall back to users_likes_tracks lookup.
-        try:
-            tr = client.tracks([track_id])[0]
-            return _build_metadata(tr)
-        except Exception:
-            likes = client.users_likes_tracks()
-            for liked in likes:
-                full_track = liked.fetch_track()
-                real_id = getattr(full_track, "real_id", getattr(full_track, "id", None))
-                if str(real_id) == str(track_id):
-                    return _build_metadata(full_track)
-            raise RuntimeError(f"Could not resolve failed track metadata for id={track_id!r}")
-
-    return await asyncio.to_thread(_sync_fetch_single)
-
+            real_id = getattr(full_track, "real_id", getattr(full_track, "id", None))
+            if str(real_id) == str(track_id):
+                return _build_metadata(full_track)
+        raise RuntimeError(f"Could not resolve failed track metadata for id={track_id!r}")

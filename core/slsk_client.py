@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 from aioslsk.client import SoulSeekClient
 from aioslsk.search.model import SearchRequest, SearchResult
@@ -17,105 +17,118 @@ _SLSK_USER_ENV = "SLSK_USERNAME"
 _SLSK_PASS_ENV = "SLSK_PASSWORD"
 _SLSK_DOWNLOAD_ENV = "SLSK_DOWNLOAD_DIR"
 
+_client_singleton: Optional[SoulSeekClient] = None
 
-class SlskClient:
-    """Thin async wrapper around aioslsk SoulSeekClient."""
 
-    def __init__(self) -> None:
-        username = os.getenv(_SLSK_USER_ENV)
-        password = os.getenv(_SLSK_PASS_ENV)
-        if not username or not password:
-            raise RuntimeError(
-                f"Soulseek credentials are not configured. "
-                f"Set {_SLSK_USER_ENV} and {_SLSK_PASS_ENV} environment variables."
-            )
-
-        download_dir_env = os.getenv(_SLSK_DOWNLOAD_ENV)
-        download_dir = Path(download_dir_env) if download_dir_env else Path.cwd() / "slsk_downloads"
-        download_dir.mkdir(parents=True, exist_ok=True)
-
-        self._settings = Settings(
-            credentials=CredentialsSettings(username=username, password=password),
-            shares=SharesSettings(download=str(download_dir), directories=[]),
+def _get_settings() -> Settings:
+    username = os.getenv(_SLSK_USER_ENV)
+    password = os.getenv(_SLSK_PASS_ENV)
+    if not username or not password:
+        raise RuntimeError(
+            f"Soulseek credentials are not configured. "
+            f"Set {_SLSK_USER_ENV} and {_SLSK_PASS_ENV} environment variables."
         )
-        self._client: SoulSeekClient | None = None
 
-    async def __aenter__(self) -> "SlskClient":
-        self._client = SoulSeekClient(self._settings)
-        await self._client.start()
-        await self._client.login()
-        return self
+    download_dir_env = os.getenv(_SLSK_DOWNLOAD_ENV)
+    download_dir = Path(download_dir_env) if download_dir_env else Path.cwd() / "slsk_downloads"
+    download_dir.mkdir(parents=True, exist_ok=True)
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:  # type: ignore[override]
-        if self._client is not None:
-            await self._client.stop()
-            self._client = None
+    return Settings(
+        credentials=CredentialsSettings(username=username, password=password),
+        shares=SharesSettings(download=str(download_dir), directories=[]),
+    )
 
-    @property
-    def _c(self) -> SoulSeekClient:
-        if self._client is None:
-            raise RuntimeError("SlskClient is not started, use it as an async context manager.")
-        return self._client
 
-    async def _search_best_result(self, track: TrackMetadata) -> SearchResult:
-        query = f"{track.title} - {', '.join(track.artists) or 'Unknown'}"
-        request: SearchRequest = await self._c.searches.search(query)
+async def _search_best_result(client: SoulSeekClient, track: TrackMetadata) -> SearchResult:
+    query = f"{track.title} - {', '.join(track.artists) or 'Unknown'}"
+    request: SearchRequest = await client.searches.search(query)
 
-        # Wait a bit for results to come in.
-        await asyncio.sleep(5)
-        if not request.results:
-            raise DownloadError(f"No Soulseek search results for query {query!r}")
+    await asyncio.sleep(5)
+    if not request.results:
+        raise DownloadError(f"No Soulseek search results for query {query!r}")
 
-        # Prefer results with free slots and highest avg speed, then smallest queue.
-        def _score(res: SearchResult) -> tuple[int, int]:
-            free = 1 if res.has_free_slots else 0
-            return (free, res.avg_speed or 0)
+    def _score(res: SearchResult) -> tuple[int, int]:
+        free = 1 if res.has_free_slots else 0
+        return (free, res.avg_speed or 0)
 
-        best = max(request.results, key=_score)
-        return best
+    return max(request.results, key=_score)
 
-    async def _download_once(self, track: TrackMetadata) -> Tuple[Path, str]:
-        from aioslsk.transfer.model import Transfer  # imported lazily to speed import time
 
-        result = await self._search_best_result(track)
-        if not result.shared_items:
-            raise DownloadError("Best Soulseek result has no shared items.")
+async def _download_once(client: SoulSeekClient, track: TrackMetadata) -> Tuple[Path, str]:
+    from aioslsk.transfer.model import Transfer
 
-        file = result.shared_items[0]
-        transfer: Transfer = await self._c.transfers.download(result.username, file.filename)
+    result = await _search_best_result(client, track)
+    if not result.shared_items:
+        raise DownloadError("Best Soulseek result has no shared items.")
 
-        # Wait until transfer is finalized.
-        while not transfer.is_finalized():
-            await asyncio.sleep(0.5)
+    file = result.shared_items[0]
+    transfer: Transfer = await client.transfers.download(result.username, file.filename)
 
-        snapshot = transfer.progress_snapshot
-        if snapshot.fail_reason:
-            raise DownloadError(f"Soulseek transfer failed: {snapshot.fail_reason}")
-        if not transfer.local_path:
-            raise DownloadError("Soulseek transfer finished but local_path is missing.")
+    while not transfer.is_finalized():
+        await asyncio.sleep(0.5)
 
-        path = Path(transfer.local_path)
-        if not path.exists():
-            raise DownloadError(f"Soulseek reported completed download but file is missing: {path}")
+    snapshot = transfer.progress_snapshot
+    if snapshot.fail_reason:
+        raise DownloadError(f"Soulseek transfer failed: {snapshot.fail_reason}")
+    if not transfer.local_path:
+        raise DownloadError("Soulseek transfer finished but local_path is missing.")
 
-        ext = path.suffix.lstrip(".").lower() or "mp3"
-        return path, ext
+    path = Path(transfer.local_path)
+    if not path.exists():
+        raise DownloadError(f"Soulseek reported completed download but file is missing: {path}")
 
-    async def download_track_with_retries(
-        self,
-        track: TrackMetadata,
-        timeout_seconds: int,
-        max_retries: int,
-    ) -> Tuple[Path, str]:
-        last_error: Exception | None = None
+    ext = path.suffix.lstrip(".").lower() or "mp3"
+    return path, ext
 
-        for _ in range(max_retries):
-            try:
-                return await asyncio.wait_for(
-                    self._download_once(track),
-                    timeout=timeout_seconds,
-                )
-            except Exception as exc:  # noqa: BLE001
-                last_error = exc
-        raise DownloadError(str(last_error) if last_error else "Unknown download error")
 
+async def get_soulseek_client() -> SoulSeekClient:
+    """Return the singleton Soulseek client, initializing it if needed."""
+    global _client_singleton
+    if _client_singleton is None:
+        settings = _get_settings()
+        _client_singleton = SoulSeekClient(settings)
+        await _client_singleton.start()
+        await _client_singleton.login()
+    return _client_singleton
+
+
+async def shutdown_soulseek_client() -> None:
+    """Stop and clear the singleton Soulseek client."""
+    global _client_singleton
+    if _client_singleton is not None:
+        await _client_singleton.stop()
+        _client_singleton = None
+
+
+async def download_track(
+    client: SoulSeekClient,
+    track: TrackMetadata,
+    timeout_seconds: int,
+    max_retries: int,
+) -> Tuple[Path, str]:
+    """Download a single track using the given Soulseek client."""
+    last_error: Exception | None = None
+    for _ in range(max_retries):
+        try:
+            return await asyncio.wait_for(
+                _download_once(client, track),
+                timeout=timeout_seconds,
+            )
+        except Exception as exc:
+            last_error = exc
+    raise DownloadError(str(last_error) if last_error else "Unknown download error")
+
+
+def download_track_with_retries(
+    track: TrackMetadata,
+    timeout_seconds: int,
+    max_retries: int,
+) -> Tuple[Path, str]:
+    """Синхронная загрузка одного трека. Каждый вызов использует asyncio.run(); клиент явно останавливается до закрытия цикла, чтобы избежать RuntimeError('Event loop is closed')."""
+    async def _run_standalone() -> Tuple[Path, str]:
+        client = await get_soulseek_client()
+        try:
+            return await download_track(client, track, timeout_seconds, max_retries)
+        finally:
+            await shutdown_soulseek_client()
+    return asyncio.run(_run_standalone())

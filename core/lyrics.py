@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-import aiohttp
+import requests
 
 from core.yandex_client import TrackMetadata
 
@@ -12,10 +12,10 @@ from core.yandex_client import TrackMetadata
 LRCLIB_SEARCH_URL = "https://lrclib.net/api/search"
 
 
-logger = logging.getLogger("yandex_to_navidrome.lyrics")
+logger = logging.getLogger("yandexmusic_to_navidrome.lyrics")
 
 
-async def _fetch_best_lrclib_entry(track: TrackMetadata) -> Optional[dict]:
+def _fetch_best_lrclib_entry(track: TrackMetadata) -> Optional[dict]:
     params = {
         "track_name": track.title,
         "artist_name": ", ".join(track.artists) if track.artists else "",
@@ -25,17 +25,18 @@ async def _fetch_best_lrclib_entry(track: TrackMetadata) -> Optional[dict]:
     if track.duration_ms:
         params["duration"] = track.duration_ms / 1000.0
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(LRCLIB_SEARCH_URL, params=params, timeout=15) as resp:
-            if resp.status != 200:
-                logger.debug("LRCLIB request failed", extra={"status": resp.status})
-                return None
-            data = await resp.json()
+    try:
+        resp = requests.get(LRCLIB_SEARCH_URL, params=params, timeout=15)
+        if resp.status_code != 200:
+            logger.debug("LRCLIB request failed", extra={"status": resp.status_code})
+            return None
+        data = resp.json()
+    except Exception:
+        return None
 
     if not isinstance(data, list) or not data:
         return None
 
-    # Prefer entries with syncedLyrics present and closest duration.
     def _score(item: dict) -> tuple[int, float]:
         has_synced = 1 if item.get("syncedLyrics") else 0
         duration = float(item.get("duration") or 0.0)
@@ -48,12 +49,12 @@ async def _fetch_best_lrclib_entry(track: TrackMetadata) -> Optional[dict]:
     return best
 
 
-async def generate_lrc_for_track(audio_path: Path, track: TrackMetadata) -> None:
+def generate_lrc_for_track(audio_path: Path, track: TrackMetadata) -> None:
     lrc_path = audio_path.with_suffix(".lrc")
     if lrc_path.exists():
         return
 
-    entry = await _fetch_best_lrclib_entry(track)
+    entry = _fetch_best_lrclib_entry(track)
     if not entry:
         logger.info(
             "no_lyrics_found",
@@ -66,4 +67,3 @@ async def generate_lrc_for_track(audio_path: Path, track: TrackMetadata) -> None
         return
 
     lrc_path.write_text(synced.strip() + "\n", encoding="utf-8")
-

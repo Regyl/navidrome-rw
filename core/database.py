@@ -1,20 +1,21 @@
 from __future__ import annotations
 
 import datetime as _dt
+import sqlite3
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
-import aiosqlite
+FailedTrack = Tuple[str, str]  # (track_id, error)
 
 
 class MigrationDB:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
-        self._conn: aiosqlite.Connection | None = None
+        self._conn: sqlite3.Connection | None = None
 
-    async def __aenter__(self) -> "MigrationDB":
-        self._conn = await aiosqlite.connect(self._db_path)
-        await self._conn.execute(
+    def __enter__(self) -> "MigrationDB":
+        self._conn = sqlite3.connect(self._db_path)
+        self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS migrations (
                 track_id   TEXT PRIMARY KEY,
@@ -25,32 +26,30 @@ class MigrationDB:
             )
             """
         )
-        await self._conn.commit()
+        self._conn.commit()
         return self
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:  # type: ignore[override]
+    def __exit__(self, exc_type, exc, tb) -> None:
         if self._conn is not None:
-            await self._conn.close()
+            self._conn.close()
             self._conn = None
 
     @property
-    def _connection(self) -> aiosqlite.Connection:
+    def _connection(self) -> sqlite3.Connection:
         if self._conn is None:
-            raise RuntimeError("MigrationDB is not initialized, use it as an async context manager.")
+            raise RuntimeError("MigrationDB is not initialized, use it as a context manager.")
         return self._conn
 
-    async def is_successful(self, track_id: str) -> bool:
-        conn = self._connection
-        async with conn.execute(
+    def is_successful(self, track_id: str) -> bool:
+        cursor = self._connection.execute(
             "SELECT status FROM migrations WHERE track_id = ?", (track_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
+        )
+        row = cursor.fetchone()
         return bool(row and row[0] == "success")
 
-    async def mark_success(self, track_id: str, dest_path: str) -> None:
-        conn = self._connection
+    def mark_success(self, track_id: str, dest_path: str) -> None:
         now = _dt.datetime.utcnow().isoformat()
-        await conn.execute(
+        self._connection.execute(
             """
             INSERT INTO migrations (track_id, status, dest_path, error, updated_at)
             VALUES (?, 'success', ?, NULL, ?)
@@ -62,12 +61,11 @@ class MigrationDB:
             """,
             (track_id, dest_path, now),
         )
-        await conn.commit()
+        self._connection.commit()
 
-    async def mark_failed(self, track_id: str, error: str) -> None:
-        conn = self._connection
+    def mark_failed(self, track_id: str, error: str) -> None:
         now = _dt.datetime.utcnow().isoformat()
-        await conn.execute(
+        self._connection.execute(
             """
             INSERT INTO migrations (track_id, status, dest_path, error, updated_at)
             VALUES (?, 'failed', NULL, ?, ?)
@@ -78,13 +76,27 @@ class MigrationDB:
             """,
             (track_id, error, now),
         )
-        await conn.commit()
+        self._connection.commit()
 
-    async def get_failed_track_ids(self) -> List[str]:
-        conn = self._connection
-        async with conn.execute(
+    def get_failed_track_ids(self) -> List[str]:
+        cursor = self._connection.execute(
             "SELECT track_id FROM migrations WHERE status = 'failed'"
-        ) as cursor:
-            rows = await cursor.fetchall()
+        )
+        rows = cursor.fetchall()
         return [row[0] for row in rows]
 
+    def get_failed_tracks(self) -> List[FailedTrack]:
+        """Return all failed tracks as (track_id, error) pairs."""
+        cursor = self._connection.execute(
+            "SELECT track_id, error FROM migrations WHERE status = 'failed' ORDER BY track_id"
+        )
+        rows = cursor.fetchall()
+        return [(row[0], row[1] or "") for row in rows]
+
+    def get_successful_count(self) -> int:
+        """Return the number of successfully downloaded tracks."""
+        cursor = self._connection.execute(
+            "SELECT COUNT(*) FROM migrations WHERE status = 'success'"
+        )
+        row = cursor.fetchone()
+        return row[0] if row else 0
