@@ -373,6 +373,67 @@
       background: linear-gradient(135deg, var(--accent) 0%, #c73e54 100%);
       color: #fff;
     }
+
+    .logs-section {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 1.5rem;
+      margin-top: 2rem;
+      backdrop-filter: blur(12px);
+      box-shadow: var(--shadow);
+    }
+
+    .logs-section h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 0.75rem;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .logs-section .btn-refresh {
+      padding: 0.35rem 0.75rem;
+      font-size: 0.8rem;
+      background: rgba(255, 255, 255, 0.1);
+      color: var(--text);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    .logs-section .btn-refresh:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
+
+    .log-view {
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-sm);
+      padding: 1rem;
+      max-height: 360px;
+      overflow: auto;
+      font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+      font-size: 0.8rem;
+      line-height: 1.45;
+      color: var(--text-muted);
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .log-view.empty {
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    .log-view.error {
+      color: var(--accent);
+    }
   </style>
 </head>
 <body>
@@ -437,6 +498,14 @@
       </ul>
     </section>
 
+    <section class="logs-section">
+      <h2>
+        <span>Logs</span>
+        <button type="button" class="btn-refresh" id="btnRefreshLogs">Refresh</button>
+      </h2>
+      <div class="log-view" id="logView">Loading…</div>
+    </section>
+
     <p class="footer">
       <span class="dot"></span> Auto-refresh every 5s
     </p>
@@ -450,6 +519,8 @@
     const btnYm = document.getElementById('btnYmImport');
     const btnRetry = document.getElementById('btnRetryFailed');
     const btnSc = document.getElementById('btnSoundcloud');
+    const logView = document.getElementById('logView');
+    const btnRefreshLogs = document.getElementById('btnRefreshLogs');
 
     function render(data) {
       const total = data.total_count ?? 0;
@@ -500,6 +571,13 @@
       btnYm.disabled = running;
       btnRetry.disabled = running;
       btnSc.disabled = running;
+
+      if (running && !window._logsPollId) {
+        window._logsPollId = setInterval(fetchLogs, 3000);
+      } else if (!running && window._logsPollId) {
+        clearInterval(window._logsPollId);
+        window._logsPollId = null;
+      }
     }
 
     function escapeHtml(s) {
@@ -509,6 +587,26 @@
     }
 
     let pollInterval = 5000;
+
+    async function fetchLogs() {
+      try {
+        const r = await fetch('/api/logs');
+        const data = await r.json();
+        logView.classList.remove('empty', 'error');
+        if (data.error) {
+          logView.textContent = 'Error: ' + escapeHtml(data.error);
+          logView.classList.add('error');
+        } else if (data.content == null || data.content === '') {
+          logView.textContent = 'No log file yet. Run a command to generate logs.';
+          logView.classList.add('empty');
+        } else {
+          logView.textContent = data.content;
+        }
+      } catch (e) {
+        logView.textContent = 'Failed to load logs: ' + escapeHtml(e.message);
+        logView.classList.add('error');
+      }
+    }
 
     async function fetchStatus() {
       try {
@@ -577,8 +675,11 @@
       runCommand('/api/run/soundcloud-import', { playlist_url: url });
     });
 
+    btnRefreshLogs.addEventListener('click', fetchLogs);
+
     let intervalId = setInterval(fetchStatus, 5000);
     fetchStatus();
+    fetchLogs();
   </script>
 </body>
 </html>

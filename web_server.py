@@ -91,6 +91,37 @@ def _job_to_response(job: dict | None) -> dict | None:
     }
 
 
+_LOG_TAIL_BYTES = 200_000
+_LOG_TAIL_LINES = 1000
+
+
+@app.get("/api/logs")
+def get_logs() -> dict:
+    """Return tail of migration.log from YM_NAVIDROME_DATA directory."""
+    try:
+        data_dir = _get_data_dir()
+    except RuntimeError:
+        return {"content": None, "error": "YM_NAVIDROME_DATA not set"}
+    log_path = data_dir / "migration.log"
+    if not log_path.exists():
+        return {"content": "", "error": None}
+    try:
+        size = log_path.stat().st_size
+        with open(log_path, "rb") as f:
+            if size <= _LOG_TAIL_BYTES:
+                raw = f.read()
+            else:
+                f.seek(size - _LOG_TAIL_BYTES)
+                raw = f.read()
+        text = raw.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        tail = lines[-_LOG_TAIL_LINES:] if len(lines) > _LOG_TAIL_LINES else lines
+        content = "\n".join(tail)
+        return {"content": content, "error": None}
+    except OSError as e:
+        return {"content": None, "error": str(e)}
+
+
 def _run_job(command: str, playlist_url: str | None = None) -> None:
     from util.utils import configure_logging
     from main import _build_config, _get_data_dir as main_get_data_dir, run_import_soundcloud_playlist, run_retry_failed, run_sync_like_tracks
@@ -133,7 +164,7 @@ class RunSoundcloudImportBody(BaseModel):
 
 
 @app.post("/api/run/ym-import")
-def run_ym_import(body: RunYmImportBody) -> dict:
+def run_ym_import() -> dict:
     """Start Yandex Music liked tracks sync. One job at a time."""
     global _current_job
     with _job_lock:
@@ -159,7 +190,7 @@ def run_ym_import(body: RunYmImportBody) -> dict:
 
 
 @app.post("/api/run/retry-failed")
-def run_retry_failed_api(body: RunRetryFailedBody) -> dict:
+def run_retry_failed_api() -> dict:
     """Start retry of failed tracks. One job at a time."""
     global _current_job
     with _job_lock:
