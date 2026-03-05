@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List
+from urllib.parse import urlparse
 
 import yt_dlp
 
@@ -14,6 +15,26 @@ _logger = logging.getLogger("soundcloud_client")
 
 # Prefix to avoid collision with Yandex track_id in migration DB
 _TRACK_ID_PREFIX = "sc_"
+
+# Base URL pattern for a user's likes (use actual username; "you" does not work with yt-dlp and returns 404)
+def _likes_url_for_username(username: str) -> str:
+    """Build soundcloud.com/USERNAME/likes URL. Accepts username or full URL."""
+    s = (username or "").strip()
+    if not s:
+        raise ValueError("SoundCloud username is required for likes (e.g. your profile name from the URL)")
+    # If they passed a URL, take the first path segment as username
+    if "soundcloud.com" in s:
+        # e.g. https://soundcloud.com/foo/likes or https://soundcloud.com/foo
+        parsed = urlparse(s if s.startswith("http") else "https://" + s)
+        parts = [p for p in parsed.path.strip("/").split("/") if p and p != "likes"]
+        if not parts:
+            raise ValueError("Could not parse username from URL; use your SoundCloud username (e.g. from your profile URL)")
+        s = parts[0]
+    # Sanitize: only allow one path segment (no slashes)
+    s = s.split("/")[0].split("?")[0]
+    if not s:
+        raise ValueError("SoundCloud username is required")
+    return f"https://soundcloud.com/{s}/likes"
 
 
 @dataclass
@@ -63,13 +84,19 @@ def _entry_to_metadata(entry: dict, index: int) -> TrackMetadata:
     )
 
 
-def fetch_playlist_tracks(playlist_url: str) -> List[SoundCloudTrack]:
-    """Extract playlist/set from SoundCloud and return list of (TrackMetadata, track URL)."""
-    opts = {
+def _build_ydl_opts() -> dict:
+    opts: dict = {
         "quiet": True,
         "no_warnings": True,
         "extract_flat": False,
     }
+
+    return opts
+
+
+def fetch_playlist_tracks(playlist_url: str) -> List[SoundCloudTrack]:
+    """Extract playlist/set from SoundCloud and return list of (TrackMetadata, track URL)."""
+    opts = _build_ydl_opts()
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(playlist_url, download=False)
     if not info:
@@ -94,3 +121,10 @@ def fetch_playlist_tracks(playlist_url: str) -> List[SoundCloudTrack]:
         result.append(SoundCloudTrack(metadata=metadata, url=url))
     _logger.info("Fetched SoundCloud playlist %r: %d tracks", playlist_title, len(result))
     return result
+
+
+def fetch_liked_tracks(username: str) -> List[SoundCloudTrack]:
+    """Fetch liked tracks for a SoundCloud user (https://soundcloud.com/USERNAME/likes).
+    Use your actual username; 'you' does not work with yt-dlp (404). Set SOUNDCLOUD_COOKIES_FILE for private likes."""
+    url = _likes_url_for_username(username)
+    return fetch_playlist_tracks(url)
