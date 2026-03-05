@@ -6,7 +6,7 @@
 было принято решение съезжать на [Navidrome](https://github.com/navidrome/navidrome).
 
 Что делает текущий скрипт:
-- Парсит метаданные ваших лайкнутых треков из ЯМ
+- Парсит метаданные ваших **лайкнутых** треков из ЯМ
 - Качает .mp3/.flac/etc из YoutubeMusic/[Soulseek](https://www.reddit.com/r/musichoarder/comments/xenxc7/comment/iohxy2u/)
 - Качает синхронизированные .lrc из [LRCLIB](https://lrclib.net/)
 - Качает обложку альбома из яндекс музыки
