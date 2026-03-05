@@ -1,84 +1,80 @@
-# Yandex Music to Navidrome migration
+# Introduction
 
-Utility to migrate your Yandex Music liked tracks into a Navidrome-compatible library using:
+Здравствуйте, товарищи!  
+Не прошло и недели с 1 марта 2026 года, как у меня сгорела жопа из-за цензуры музыки, в частности в яндекс музыки (дальше - ЯМ) (т.к. пользуюсь в основном им).
+Т.к. цензуре не видно конца-края, я решил съехать с российских платформ. Spotify/YoutubeMusic/SoundCloud не подошли по разным причинам, 
+было принято решение съезжать на [Navidrome](https://github.com/navidrome/navidrome).
 
-- Yandex Music API (`yandex-music`) for scraping liked tracks
-- yt-dlp (YouTube and other sites) for downloading audio — tried first
-- Soulseek (`aioslsk`) for downloading — fallback when yt-dlp finds nothing
-- LRCLIB (same backend used by `lrcget`) for synced `.lrc` lyrics
+Что делает текущий скрипт:
+- Парсит метаданные ваших лайкнутых треков из ЯМ
+- Качает .mp3/.flac/etc из YoutubeMusic/[Soulseek](https://www.reddit.com/r/musichoarder/comments/xenxc7/comment/iohxy2u/)
+- Качает синхронизированные .lrc из [LRCLIB](https://lrclib.net/)
+- Качает обложку альбома из яндекс музыки
+- Складывает все в целевую папку navidrome
 
-Navidrome expects the library layout:
+В идеале после запуска скрипта запускаете full-scan в navidrome и слушаете всю свою библиотеку с треками без блюра/цензуры.
 
-- `Artist Name/Album Name/song.mp3`
-- `Artist Name/Album Name/song.lrc`
-- `Artist Name/Album Name/album-cover.jpg`
+## Требования
 
-### Requirements
+- Установленный python
+- Токен для получения метадаты с ЯМ. Инструкция по получению [тут](https://yandex-music.readthedocs.io/en/main/token.html)
+- Установленный [FFmpeg](https://www.ffmpeg.org/download.html)
+- Установленный [zapret](https://github.com/Flowseal/zapret-discord-youtube) (не пробовал без него, но учитывая проблемы ютубом, сами понимаете)
 
-- Python
-- A valid Yandex Music access token
-- FFmpeg (for yt-dlp audio conversion)
-- A Soulseek account (username and password) — used as fallback when yt-dlp finds nothing
-
-Install dependencies:
+Установить необходимые зависимости:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Configuration
+### Конфигурация
 
-You can configure the tool either via regular environment variables or a `.env` file in the project root.
+Для запуска в корне проекта должен лежать `.env` файл со следующими конфигами: 
 
-#### Using a `.env` file
+- `YANDEX_MUSIC_TOKEN` – Токен яндекс музыке. Способ получения описан выше
+- `SLSK_USERNAME` – Рандомный soulseek логин. Предварительная регистрация/авторизация где-либо не требуется
+- `SLSK_PASSWORD` – рандомный soulseek пароль. Предварительная регистрация/авторизация где-либо не требуется
+- `SLSK_DOWNLOAD_DIR` – Временная директория, где будут храниться промежуточные файлы soulseek
+- `YTDLP_DOWNLOAD_DIR` – Временная директория, где будут храниться промежуточные файлы YoutubeMusic
+- `YM_NAVIDROME_DATA` – Постоянная директория, где скрипт хранит промежуточные данные о миграции треков из ЯМ в 
+- `NAVIDROME_FOLDER` – Целевая директория, откуда navidrome читает музыку/альбомы/артистов
 
-Create a file named `.env` next to `main.py` with contents like:
+## Использование
 
-```bash
-YANDEX_MUSIC_TOKEN=your_yandex_token_here
-SLSK_USERNAME=your_soulseek_username
-SLSK_PASSWORD=your_soulseek_password
-SLSK_DOWNLOAD_DIR=D:\Temp\SoulseekDownloads
-YTDLP_DOWNLOAD_DIR=D:\Temp\YtdlpDownloads
-YM_NAVIDROME_DATA=D:\Temp\YmNavidromeCache
-```
-
-These values will be loaded automatically when you run the CLI.
-
-#### Using regular environment variables
-
-Set the following environment variables:
-
-- `YANDEX_MUSIC_TOKEN` – Yandex Music API token.
-- `SLSK_USERNAME` – Soulseek username.
-- `SLSK_PASSWORD` – Soulseek password.
-- `SLSK_DOWNLOAD_DIR` – directory where temporary Soulseek downloads are stored.
-- `YTDLP_DOWNLOAD_DIR` – directory where temporary yt-dlp downloads are stored.
-- `YM_NAVIDROME_DATA` – directory where `migration.db`, `migration.log`, and `migration_liked_tracks.json` are stored.
-- `NAVIDROME_FOLDER` – Target folder which navidrome reads
-
-### Usage
-
-Run a full sync into an existing Navidrome music root:
+1. Запустить выгрузку с яндекс музыки в navidrome
 
 ```bash
 python -m main sync
 ```
 
-Retry previously failed tracks:
+2. Попробовать обработать неуспешные повторно (с большим шансом ничего не даст, т.к. трек либо не найден, либо недоступен для скачиванияи т.п.)
 
 ```bash
 python -m main retry-failed
 ```
 
-List previously failed tracks:
+3. Список неуспешно обработанных треков
 
 ```bash
 python -m main list-failed
 ```
 
-Count successfully downloaded tracks:
+4. Получение количества успешно загруженных треков:
 
 ```bash
 python -m main count-successful
 ```
+
+# Ограничения
+- YoutubeMusic, использующийся как главный источник, имеет свое ограничение на кол-во запросов в час. По умолчанию это 300. 
+В случае, если в процессе обработки вылетело исключение в формате `The current session has been rate-limited by YouTube` - перезапустите через час. Ранее обработанные треки не будут пуллиться по-новой. 
+  - Детали [тут](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#common-youtube-errors)
+
+# Существующие проблемы
+- Не парсится жанр
+- Если у трека два и более исполнителя - они склеиваются в одного
+
+Как говорится, any contribution welcome.
+
+# Послесловие
+Да, условно еще одна обертка над yt-dlp. Да, использовал ИИ при написании. И что вы мне сделаете, я в другом городе.
