@@ -92,7 +92,7 @@ def process_single_track(
             except DownloadError as e:
                 _logger.warning("download_error from yt-dlp: " + str(e), extra={"track_id": track.track_id})
                 if "The current session has been rate-limited by YouTube" in str(e):
-                    exit(1)
+                    raise Exception("The current session has been rate-limited by YouTube. Retry after an hour")
                 download_path, actual_extension = download_track_soulseek(
                     track=track,
                     timeout_seconds=cfg.download_timeout_seconds,
