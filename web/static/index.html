@@ -411,19 +411,11 @@
         <div class="run-card">
           <h3>YM Import</h3>
           <p class="run-desc">Sync liked tracks from Yandex Music</p>
-          <div class="run-row">
-            <label>Timeout (min)</label>
-            <input type="number" id="ymTimeout" min="1" value="10" />
-          </div>
           <button type="button" class="btn btn-primary" id="btnYmImport">Run ym-import</button>
         </div>
         <div class="run-card">
           <h3>Retry failed</h3>
           <p class="run-desc">Retry previously failed downloads</p>
-          <div class="run-row">
-            <label>Timeout (min)</label>
-            <input type="number" id="retryTimeout" min="1" value="10" />
-          </div>
           <button type="button" class="btn btn-primary" id="btnRetryFailed">Run retry-failed</button>
         </div>
         <div class="run-card run-card-wide">
@@ -432,10 +424,6 @@
           <div class="run-row">
             <label>Playlist URL</label>
             <input type="url" id="soundcloudUrl" placeholder="https://soundcloud.com/..." />
-          </div>
-          <div class="run-row">
-            <label>Timeout (min)</label>
-            <input type="number" id="scTimeout" min="1" value="10" />
           </div>
           <button type="button" class="btn btn-primary" id="btnSoundcloud">Run soundcloud-import</button>
         </div>
@@ -575,12 +563,10 @@
     }
 
     btnYm.addEventListener('click', () => {
-      const timeout = parseInt(document.getElementById('ymTimeout').value, 10) || 10;
-      runCommand('/api/run/ym-import', { timeout_minutes: Math.max(1, timeout) });
+      runCommand('/api/run/ym-import', {});
     });
     btnRetry.addEventListener('click', () => {
-      const timeout = parseInt(document.getElementById('retryTimeout').value, 10) || 10;
-      runCommand('/api/run/retry-failed', { timeout_minutes: Math.max(1, timeout) });
+      runCommand('/api/run/retry-failed', {});
     });
     btnSc.addEventListener('click', () => {
       const url = document.getElementById('soundcloudUrl').value.trim();
@@ -588,8 +574,7 @@
         alert('Enter a SoundCloud playlist URL');
         return;
       }
-      const timeout = parseInt(document.getElementById('scTimeout').value, 10) || 10;
-      runCommand('/api/run/soundcloud-import', { playlist_url: url, timeout_minutes: Math.max(1, timeout) });
+      runCommand('/api/run/soundcloud-import', { playlist_url: url });
     });
 
     let intervalId = setInterval(fetchStatus, 5000);

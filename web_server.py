@@ -91,14 +91,14 @@ def _job_to_response(job: dict | None) -> dict | None:
     }
 
 
-def _run_job(command: str, timeout_minutes: int, playlist_url: str | None = None) -> None:
+def _run_job(command: str, playlist_url: str | None = None) -> None:
     from util.utils import configure_logging
     from main import _build_config, _get_data_dir as main_get_data_dir, run_import_soundcloud_playlist, run_retry_failed, run_sync_like_tracks
 
     global _current_job
     data_dir = main_get_data_dir()
     configure_logging(data_dir / "migration.log")
-    cfg = _build_config(timeout_minutes)
+    cfg = _build_config()
     try:
         if command == "ym-import":
             run_sync_like_tracks(cfg)
@@ -121,23 +121,21 @@ def _run_job(command: str, timeout_minutes: int, playlist_url: str | None = None
 
 
 class RunYmImportBody(BaseModel):
-    timeout_minutes: int = 10
+    pass
 
 
 class RunRetryFailedBody(BaseModel):
-    timeout_minutes: int = 10
+    pass
 
 
 class RunSoundcloudImportBody(BaseModel):
     playlist_url: str
-    timeout_minutes: int = 10
 
 
 @app.post("/api/run/ym-import")
 def run_ym_import(body: RunYmImportBody) -> dict:
     """Start Yandex Music liked tracks sync. One job at a time."""
-    if body.timeout_minutes < 1:
-        raise HTTPException(422, "timeout_minutes must be >= 1")
+    global _current_job
     with _job_lock:
         if _current_job and _current_job.get("status") == "running":
             raise HTTPException(409, "A job is already running")
@@ -151,7 +149,7 @@ def run_ym_import(body: RunYmImportBody) -> dict:
         }
     thread = threading.Thread(
         target=_run_job,
-        kwargs={"command": "ym-import", "timeout_minutes": body.timeout_minutes},
+        kwargs={"command": "ym-import"},
         daemon=True,
     )
     thread.start()
@@ -163,8 +161,7 @@ def run_ym_import(body: RunYmImportBody) -> dict:
 @app.post("/api/run/retry-failed")
 def run_retry_failed_api(body: RunRetryFailedBody) -> dict:
     """Start retry of failed tracks. One job at a time."""
-    if body.timeout_minutes < 1:
-        raise HTTPException(422, "timeout_minutes must be >= 1")
+    global _current_job
     with _job_lock:
         if _current_job and _current_job.get("status") == "running":
             raise HTTPException(409, "A job is already running")
@@ -178,7 +175,7 @@ def run_retry_failed_api(body: RunRetryFailedBody) -> dict:
         }
     thread = threading.Thread(
         target=_run_job,
-        kwargs={"command": "retry-failed", "timeout_minutes": body.timeout_minutes},
+        kwargs={"command": "retry-failed"},
         daemon=True,
     )
     thread.start()
@@ -190,8 +187,7 @@ def run_retry_failed_api(body: RunRetryFailedBody) -> dict:
 @app.post("/api/run/soundcloud-import")
 def run_soundcloud_import_api(body: RunSoundcloudImportBody) -> dict:
     """Start SoundCloud playlist import. One job at a time."""
-    if body.timeout_minutes < 1:
-        raise HTTPException(422, "timeout_minutes must be >= 1")
+    global _current_job
     url = (body.playlist_url or "").strip()
     if not url:
         raise HTTPException(422, "playlist_url is required")
@@ -208,7 +204,7 @@ def run_soundcloud_import_api(body: RunSoundcloudImportBody) -> dict:
         }
     thread = threading.Thread(
         target=_run_job,
-        kwargs={"command": "soundcloud-import", "timeout_minutes": body.timeout_minutes, "playlist_url": url},
+        kwargs={"command": "soundcloud-import", "playlist_url": url},
         daemon=True,
     )
     thread.start()

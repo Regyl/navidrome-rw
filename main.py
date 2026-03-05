@@ -172,29 +172,21 @@ def run_retry_failed(cfg: AppConfig) -> None:
             process_single_track(track, cfg, db)
 
 
-def _build_config(timeout_minutes: int) -> AppConfig:
+def _build_config() -> AppConfig:
     folder = os.getenv("NAVIDROME_FOLDER")
     if not folder:
         raise RuntimeError("NAVIDROME_FOLDER environment variable not set")
     return AppConfig(
         music_root=Path(folder),
-        download_timeout_seconds=timeout_minutes * 60,
     )
 
 
 @app.command("ym-import")
-def sync_command(
-        timeout_minutes: int = typer.Option(
-        10,
-        "--timeout-minutes",
-        min=1,
-        help="Per-track download timeout in minutes.",
-    ),
-) -> None:
+def sync_command() -> None:
     """Synchronize all liked tracks from Yandex Music into Navidrome."""
     data_dir = _get_data_dir()
     configure_logging(data_dir / "migration.log")
-    cfg = _build_config(timeout_minutes)
+    cfg = _build_config()
     run_sync_like_tracks(cfg)
 
 
@@ -222,17 +214,11 @@ def import_soundcloud_command(
         ...,
         help="SoundCloud playlist/set URL, e.g. https://soundcloud.com/user/sets/playlist-name",
     ),
-    timeout_minutes: int = typer.Option(
-        10,
-        "--timeout-minutes",
-        min=1,
-        help="Per-track download timeout in minutes.",
-    ),
 ) -> None:
     """Import a SoundCloud playlist: download all tracks into NAVIDROME_FOLDER."""
     data_dir = _get_data_dir()
     configure_logging(data_dir / "migration.log")
-    cfg = _build_config(timeout_minutes)
+    cfg = _build_config()
     run_import_soundcloud_playlist(playlist_url, cfg)
 
 def run_list_failed(cache_dir: Path) -> None:
@@ -255,18 +241,11 @@ def run_list_failed(cache_dir: Path) -> None:
 
 
 @app.command("retry-failed")
-def retry_failed_command(
-        timeout_minutes: int = typer.Option(
-        10,
-        "--timeout-minutes",
-        min=1,
-        help="Per-track download timeout in minutes.",
-    ),
-) -> None:
+def retry_failed_command() -> None:
     """Retry previously failed downloads recorded in migration.db."""
     data_dir = _get_data_dir()
     configure_logging(data_dir / "migration.log")
-    cfg = _build_config(timeout_minutes)
+    cfg = _build_config()
     run_retry_failed(cfg)
 
 
