@@ -1,3 +1,12 @@
+<!-- TOC -->
+* [Introduction](#introduction)
+  * [Требования](#требования)
+  * [Конфигурация](#конфигурация)
+  * [Использование](#использование)
+* [Ограничения](#ограничения)
+* [Послесловие](#послесловие)
+<!-- TOC -->
+
 # Introduction
 
 Здравствуйте, товарищи!  
@@ -27,7 +36,7 @@
 pip install -r requirements.txt
 ```
 
-### Конфигурация
+## Конфигурация
 
 Для запуска в корне проекта должен лежать `.env` файл со следующими конфигами: 
 
@@ -65,7 +74,7 @@ python -m main list-failed
 python -m main count-successful
 ```
 
-5. Импорт плейлиста с SoundCloud в папку Navidrome (все треки скачиваются в `NAVIDROME_FOLDER`):
+5. Импорт плейлиста с SoundCloud:
 
 ```bash
 python -m main soundcloud-import "https://soundcloud.com/user/sets/playlist-name"
@@ -77,6 +86,7 @@ python -m main soundcloud-import "https://soundcloud.com/user/sets/playlist-name
 - YoutubeMusic, использующийся как главный источник, имеет свое ограничение на кол-во запросов в час. По умолчанию это 300. 
 В случае, если в процессе обработки вылетело исключение в формате `The current session has been rate-limited by YouTube` - перезапустите через час. Ранее обработанные треки не будут пуллиться по-новой. 
   - Детали [тут](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#common-youtube-errors)
+- Процессинг происходит в одном потоке и местами с задержками, дабы избежать блокировки/ограничений, так что запаситесь пивом и чипсами.
 
 # Послесловие
 Да, условно еще одна обертка над yt-dlp. Да, использовал ИИ при написании. И что вы мне сделаете, я в другом городе.
