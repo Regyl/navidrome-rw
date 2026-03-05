@@ -102,7 +102,7 @@ def fetch_liked_tracks(cache_path: Optional[Path] = None) -> list[TrackMetadata]
 
     for liked in likes:
         full_track = liked.fetch_track()
-        _logger.info(f"Fetched track {full_track.title}")
+        _logger.info(f"Built metadata for {full_track.title} - {full_track.artists}")
         time.sleep(0.5) # To prevent rate-limiters
         result.append(_build_metadata(full_track))
 
