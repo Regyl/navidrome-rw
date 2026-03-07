@@ -94,7 +94,6 @@ def process_single_track(
                     )
                 download_path, actual_extension = download_track_yandex(
                     track=track,
-                    timeout_seconds=cfg.download_timeout_seconds,
                     max_retries=cfg.max_download_retries,
                 )
     except (DownloadError, RuntimeError) as exc:
