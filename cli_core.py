@@ -143,21 +143,10 @@ def process_single_track_replace(
     album_dir = existing_path.parent
     ensure_directory(album_dir)
     try:
-        try:
-            download_path, actual_extension = download_track_ytdlp(
-                track=track,
-                timeout_seconds=cfg.download_timeout_seconds,
-            )
-        except DownloadError as e:
-            _logger.warning("download_error from yt-dlp: " + str(e))
-            if "The current session has been rate-limited by YouTube" in str(e):
-                raise Exception(
-                    "The current session has been rate-limited by YouTube. Retry after an hour"
-                )
-            download_path, actual_extension = download_track_yandex(
-                track=track,
-                max_retries=cfg.max_download_retries,
-            )
+        download_path, actual_extension = download_track_yandex(
+            track=track,
+            max_retries=cfg.max_download_retries,
+        )
     except (DownloadError, RuntimeError) as exc:
         _logger.error(f"redownload_failed for {track.title}: {exc}")
         db.mark_failed(track.track_id, str(exc))
